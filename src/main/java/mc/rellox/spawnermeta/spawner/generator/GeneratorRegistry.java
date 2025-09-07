@@ -77,15 +77,14 @@ public final class GeneratorRegistry implements Listener {
 	}
 	
 	public static void load() {
-		try {
-			Bukkit.getWorlds()
-			.stream()
-			.map(GeneratorRegistry::get)
-			.filter(Objects::nonNull)
-			.forEach(SpawnerWorld::load);
-		} catch (Exception e) {
-			RF.debug(e);
-		}
+               try {
+                       for(World world : Bukkit.getWorlds()) {
+                               SpawnerWorld sw = get(world);
+                               if(sw != null) sw.load();
+                       }
+               } catch (Exception e) {
+                       RF.debug(e);
+               }
 	}
 	
 	public static void reload() {

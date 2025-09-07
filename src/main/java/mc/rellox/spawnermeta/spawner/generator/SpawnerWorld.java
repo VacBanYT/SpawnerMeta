@@ -33,25 +33,35 @@ public class SpawnerWorld {
 		return spawners.values().stream();
 	}
 	
-	public void load() {
-		Stream.of(world.getLoadedChunks()).forEach(this::load);
-	}
-	
-	public void load(Chunk chunk) {
-		Stream.of(chunk.getTileEntities())
-		.filter(CreatureSpawner.class::isInstance)
-		.map(BlockState::getBlock)
-		.filter(block -> Settings.settings.ignored(block) == false)
-		.map(ISpawner::of)
-		.map(ActiveGenerator::new)
-		.forEach(queue::add);
-	}
-	
-	public void unload(Chunk chunk) {
-		spawners.values().stream()
-		.filter(g -> g.in(chunk))
-		.forEach(g -> g.remove(false));
-	}
+       public void load() {
+               for(Chunk chunk : world.getLoadedChunks()) {
+                       load(chunk);
+               }
+       }
+
+       public void load(Chunk chunk) {
+               for(BlockState state : chunk.getTileEntities()) {
+                       if(state instanceof CreatureSpawner) {
+                               Block block = state.getBlock();
+                               if(Settings.settings.ignored(block) == false) {
+                                       queue.add(new ActiveGenerator(ISpawner.of(block)));
+                               }
+                       }
+               }
+       }
+
+       public void unload(Chunk chunk) {
+               synchronized (spawners) {
+                       Iterator<IGenerator> it = spawners.values().iterator();
+                       while(it.hasNext()) {
+                               IGenerator g = it.next();
+                               if(g.in(chunk)) {
+                                       g.remove(false);
+                                       it.remove();
+                               }
+                       }
+               }
+       }
 
 	public void clear() {
 		spawners.values().forEach(IGenerator::clear);
@@ -70,55 +80,50 @@ public class SpawnerWorld {
 		spawners.values().forEach(IGenerator::control);
 	}
 	
-	public void tick() {
-		if(queue.isEmpty() == false) {
-			queue.forEach(this::put);
-			queue.clear();
-		}
-		spawners.values().forEach(IGenerator::tick);
-	}
+       public void tick() {
+               if(queue.isEmpty() == false) {
+                       synchronized (queue) {
+                               for(IGenerator g : queue) {
+                                       put(g);
+                               }
+                               queue.clear();
+                       }
+               }
+               for(IGenerator g : spawners.values()) {
+                       g.tick();
+               }
+       }
 
-	public void reduce() {
-		List<Pos> toRemove = new ArrayList<>();
+       public void reduce() {
+               synchronized (spawners) {
+                       Iterator<Map.Entry<Pos, IGenerator>> it = spawners.entrySet().iterator();
+                       while(it.hasNext()) {
+                               Map.Entry<Pos, IGenerator> e = it.next();
+                               IGenerator g = e.getValue();
+                               if(!g.active() || !g.present()) {
+                                       g.clear();
+                                       it.remove();
+                               }
+                       }
+               }
+       }
 
-		Map<Pos, IGenerator> spawnersCopy;
-		synchronized (spawners) {
-			spawnersCopy = new HashMap<>(spawners);
-		}
-
-		spawnersCopy.forEach((pos, generator) -> {
-			if (!generator.active() || !generator.present()) {
-				generator.clear();
-				toRemove.add(pos);
-			}
-		});
-
-		synchronized (spawners) {
-			toRemove.forEach(spawners::remove);
-		}
-	}
-
-	public int remove(boolean fully, Predicate<IGenerator> filter) {
-		List<Pos> toRemove = new ArrayList<>();
-
-		Map<Pos, IGenerator> spawnersCopy;
-		synchronized (spawners) {
-			spawnersCopy = new HashMap<>(spawners);
-		}
-
-		spawnersCopy.forEach((pos, generator) -> {
-			if (generator.active() && filter.test(generator)) {
-				generator.remove(fully);
-				toRemove.add(pos);
-			}
-		});
-
-		synchronized (spawners) {
-			toRemove.forEach(spawners::remove);
-		}
-
-		return toRemove.size();
-	}
+       public int remove(boolean fully, Predicate<IGenerator> filter) {
+               int removed = 0;
+               synchronized (spawners) {
+                       Iterator<Map.Entry<Pos, IGenerator>> it = spawners.entrySet().iterator();
+                       while(it.hasNext()) {
+                               Map.Entry<Pos, IGenerator> e = it.next();
+                               IGenerator g = e.getValue();
+                               if(g.active() && filter.test(g)) {
+                                       g.remove(fully);
+                                       it.remove();
+                                       removed++;
+                               }
+                       }
+               }
+               return removed;
+       }
 	
 	public void put(Block block) {
 		put(new ActiveGenerator(ISpawner.of(block)));
