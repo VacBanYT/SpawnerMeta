@@ -1,8 +1,13 @@
 package mc.rellox.spawnermeta.spawner.generator;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Queue;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.function.Predicate;
-import java.util.stream.Stream;
 
 import org.bukkit.Chunk;
 import org.bukkit.Material;
@@ -19,126 +24,136 @@ import mc.rellox.spawnermeta.spawner.ActiveGenerator;
 
 public class SpawnerWorld {
 	
-	public final World world;
-	protected final Map<Pos, IGenerator> spawners;
-	private final List<IGenerator> queue;
-	
-	public SpawnerWorld(World world) {
-		this.world = world;
-		this.spawners = Collections.synchronizedMap(new HashMap<>());
-		this.queue = Collections.synchronizedList(new LinkedList<>());
-	}
-	
-	public Stream<IGenerator> stream() {
-		return spawners.values().stream();
-	}
-	
-	public void load() {
-		Stream.of(world.getLoadedChunks()).forEach(this::load);
-	}
-	
-	public void load(Chunk chunk) {
-		Stream.of(chunk.getTileEntities())
-		.filter(CreatureSpawner.class::isInstance)
-		.map(BlockState::getBlock)
-		.filter(block -> Settings.settings.ignored(block) == false)
-		.map(ISpawner::of)
-		.map(ActiveGenerator::new)
-		.forEach(queue::add);
-	}
-	
-	public void unload(Chunk chunk) {
-		spawners.values().stream()
-		.filter(g -> g.in(chunk))
-		.forEach(g -> g.remove(false));
-	}
+        private static final int LOADS_PER_TICK = 64;
 
-	public void clear() {
-		spawners.values().forEach(IGenerator::clear);
-		spawners.clear();
-	}
-	
-	public int active() {
-		return spawners.size();
-	}
-	
-	public void update() {
-		spawners.values().forEach(IGenerator::update);
-	}
-	
-	public void control() {
-		spawners.values().forEach(IGenerator::control);
-	}
-	
-	public void tick() {
-		if(queue.isEmpty() == false) {
-			queue.forEach(this::put);
-			queue.clear();
-		}
-		spawners.values().forEach(IGenerator::tick);
-	}
+        public final World world;
+        protected final Map<Pos, IGenerator> spawners;
+        private final Queue<IGenerator> queue;
 
-	public void reduce() {
-		List<Pos> toRemove = new ArrayList<>();
+        public SpawnerWorld(World world) {
+                this.world = world;
+                this.spawners = new ConcurrentHashMap<>();
+                this.queue = new ConcurrentLinkedQueue<>();
+        }
 
-		Map<Pos, IGenerator> spawnersCopy;
-		synchronized (spawners) {
-			spawnersCopy = new HashMap<>(spawners);
-		}
+        public java.util.stream.Stream<IGenerator> stream() {
+                return spawners.values().stream();
+        }
 
-		spawnersCopy.forEach((pos, generator) -> {
-			if (!generator.active() || !generator.present()) {
-				generator.clear();
-				toRemove.add(pos);
-			}
-		});
+        public void load() {
+                for (Chunk chunk : world.getLoadedChunks()) {
+                        load(chunk);
+                }
+        }
 
-		synchronized (spawners) {
-			toRemove.forEach(spawners::remove);
-		}
-	}
+        public void load(Chunk chunk) {
+                for (BlockState state : chunk.getTileEntities()) {
+                        if (state instanceof CreatureSpawner) {
+                                Block block = state.getBlock();
+                                if (!Settings.settings.ignored(block)) {
+                                        queue.add(new ActiveGenerator(ISpawner.of(block)));
+                                }
+                        }
+                }
+        }
 
-	public int remove(boolean fully, Predicate<IGenerator> filter) {
-		List<Pos> toRemove = new ArrayList<>();
+        public void unload(Chunk chunk) {
+                Iterator<Map.Entry<Pos, IGenerator>> it = spawners.entrySet().iterator();
+                while (it.hasNext()) {
+                        Map.Entry<Pos, IGenerator> entry = it.next();
+                        IGenerator g = entry.getValue();
+                        if (g.in(chunk)) {
+                                g.remove(false);
+                                it.remove();
+                        }
+                }
+        }
 
-		Map<Pos, IGenerator> spawnersCopy;
-		synchronized (spawners) {
-			spawnersCopy = new HashMap<>(spawners);
-		}
+        public void clear() {
+                for (IGenerator g : spawners.values()) {
+                        g.clear();
+                }
+                spawners.clear();
+                queue.clear();
+        }
 
-		spawnersCopy.forEach((pos, generator) -> {
-			if (generator.active() && filter.test(generator)) {
-				generator.remove(fully);
-				toRemove.add(pos);
-			}
-		});
+        public int active() {
+                return spawners.size();
+        }
 
-		synchronized (spawners) {
-			toRemove.forEach(spawners::remove);
-		}
+        public void update() {
+                for (IGenerator g : spawners.values()) {
+                        g.update();
+                }
+        }
 
-		return toRemove.size();
-	}
-	
-	public void put(Block block) {
-		put(new ActiveGenerator(ISpawner.of(block)));
-	}
-	
-	private void put(IGenerator generator) {
-		IGenerator last = spawners.put(generator.position(), generator);
-		if(last != null) last.clear();
-	}
-	
-	public IGenerator get(Block block) {
-		IGenerator generator = spawners.get(Pos.of(block));
-		if(generator == null) {
-			if(block.getType() == Material.SPAWNER) put(block);
-		} else if(generator.active() == false) return null;
-		return generator;
-	}
-	
-	public IGenerator raw(Block block) {
-		return spawners.get(Pos.of(block));
-	}
+        public void control() {
+                for (IGenerator g : spawners.values()) {
+                        g.control();
+                }
+        }
+
+        public void tick() {
+                int processed = 0;
+                IGenerator gen;
+                while (processed < LOADS_PER_TICK && (gen = queue.poll()) != null) {
+                        put(gen);
+                        processed++;
+                }
+                for (IGenerator g : spawners.values()) {
+                        g.tick();
+                }
+        }
+
+        public void reduce() {
+                Iterator<Map.Entry<Pos, IGenerator>> it = spawners.entrySet().iterator();
+                while (it.hasNext()) {
+                        Map.Entry<Pos, IGenerator> entry = it.next();
+                        IGenerator generator = entry.getValue();
+                        if (!generator.active() || !generator.present()) {
+                                generator.clear();
+                                it.remove();
+                        }
+                }
+        }
+
+        public int remove(boolean fully, Predicate<IGenerator> filter) {
+                int removed = 0;
+                Iterator<Map.Entry<Pos, IGenerator>> it = spawners.entrySet().iterator();
+                while (it.hasNext()) {
+                        Map.Entry<Pos, IGenerator> entry = it.next();
+                        IGenerator generator = entry.getValue();
+                        if (generator.active() && filter.test(generator)) {
+                                generator.remove(fully);
+                                it.remove();
+                                removed++;
+                        }
+                }
+                return removed;
+        }
+
+        public void put(Block block) {
+                put(new ActiveGenerator(ISpawner.of(block)));
+        }
+
+        private void put(IGenerator generator) {
+                IGenerator last = spawners.put(generator.position(), generator);
+                if (last != null)
+                        last.clear();
+        }
+
+        public IGenerator get(Block block) {
+                IGenerator generator = spawners.get(Pos.of(block));
+                if (generator == null) {
+                        if (block.getType() == Material.SPAWNER)
+                                put(block);
+                } else if (generator.active() == false)
+                        return null;
+                return generator;
+        }
+
+        public IGenerator raw(Block block) {
+                return spawners.get(Pos.of(block));
+        }
 
 }
