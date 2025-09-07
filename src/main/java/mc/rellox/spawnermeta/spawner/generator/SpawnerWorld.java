@@ -1,6 +1,7 @@
 package mc.rellox.spawnermeta.spawner.generator;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.function.Predicate;
 import java.util.stream.Stream;
 
@@ -20,38 +21,41 @@ import mc.rellox.spawnermeta.spawner.ActiveGenerator;
 public class SpawnerWorld {
 	
 	public final World world;
-	protected final Map<Pos, IGenerator> spawners;
-	private final List<IGenerator> queue;
+        protected final Map<Pos, IGenerator> spawners;
+        private final Queue<Block> queue;
+
+        private static final int INIT_PER_TICK = 32;
 	
 	public SpawnerWorld(World world) {
 		this.world = world;
-		this.spawners = Collections.synchronizedMap(new HashMap<>());
-		this.queue = Collections.synchronizedList(new LinkedList<>());
+                this.spawners = Collections.synchronizedMap(new HashMap<>());
+                this.queue = new ConcurrentLinkedQueue<>();
 	}
 	
-	public Stream<IGenerator> stream() {
-		return spawners.values().stream();
-	}
-	
-	public void load() {
-		Stream.of(world.getLoadedChunks()).forEach(this::load);
-	}
-	
-	public void load(Chunk chunk) {
-		Stream.of(chunk.getTileEntities())
-		.filter(CreatureSpawner.class::isInstance)
-		.map(BlockState::getBlock)
-		.filter(block -> Settings.settings.ignored(block) == false)
-		.map(ISpawner::of)
-		.map(ActiveGenerator::new)
-		.forEach(queue::add);
-	}
-	
-	public void unload(Chunk chunk) {
-		spawners.values().stream()
-		.filter(g -> g.in(chunk))
-		.forEach(g -> g.remove(false));
-	}
+        public Stream<IGenerator> stream() {
+                return spawners.values().stream();
+        }
+
+        public void load() {
+                Chunk[] chunks = world.getLoadedChunks();
+                for(Chunk chunk : chunks) load(chunk);
+        }
+
+        public void load(Chunk chunk) {
+                for(BlockState state : chunk.getTileEntities()) {
+                        if(state instanceof CreatureSpawner) {
+                                Block block = state.getBlock();
+                                if(Settings.settings.ignored(block) == false) queue.add(block);
+                        }
+                }
+        }
+
+        public void unload(Chunk chunk) {
+                for(IGenerator g : spawners.values()) if(g.in(chunk)) g.remove(false);
+                int cx = chunk.getX();
+                int cz = chunk.getZ();
+                queue.removeIf(b -> (b.getX() >> 4) == cx && (b.getZ() >> 4) == cz);
+        }
 
 	public void clear() {
 		spawners.values().forEach(IGenerator::clear);
@@ -67,16 +71,21 @@ public class SpawnerWorld {
 	}
 	
 	public void control() {
-		spawners.values().forEach(IGenerator::control);
-	}
-	
-	public void tick() {
-		if(queue.isEmpty() == false) {
-			queue.forEach(this::put);
-			queue.clear();
-		}
-		spawners.values().forEach(IGenerator::tick);
-	}
+                spawners.values().forEach(IGenerator::control);
+        }
+
+        public void tick() {
+                int i = 0;
+                Block block;
+                while(i < INIT_PER_TICK && (block = queue.poll()) != null) {
+                        if(block.getType() != Material.SPAWNER) continue;
+                        if(Settings.settings.ignored(block) == true) continue;
+                        if(!block.getWorld().isChunkLoaded(block.getX() >> 4, block.getZ() >> 4)) continue;
+                        put(new ActiveGenerator(ISpawner.of(block)));
+                        i++;
+                }
+                spawners.values().forEach(IGenerator::tick);
+        }
 
 	public void reduce() {
 		List<Pos> toRemove = new ArrayList<>();
