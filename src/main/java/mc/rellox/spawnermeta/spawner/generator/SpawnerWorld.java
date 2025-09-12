@@ -20,63 +20,82 @@ import mc.rellox.spawnermeta.spawner.ActiveGenerator;
 public class SpawnerWorld {
 	
 	public final World world;
-	protected final Map<Pos, IGenerator> spawners;
-	private final List<IGenerator> queue;
+        protected final Map<Pos, IGenerator> spawners;
+        private final Deque<Block> queue;
+        private static final int LOAD_BATCH = 32;
 	
 	public SpawnerWorld(World world) {
 		this.world = world;
-		this.spawners = Collections.synchronizedMap(new HashMap<>());
-		this.queue = Collections.synchronizedList(new LinkedList<>());
+                this.spawners = Collections.synchronizedMap(new HashMap<>());
+                this.queue = new ArrayDeque<>();
 	}
 	
 	public Stream<IGenerator> stream() {
 		return spawners.values().stream();
 	}
 	
-	public void load() {
-		Stream.of(world.getLoadedChunks()).forEach(this::load);
-	}
-	
-	public void load(Chunk chunk) {
-		Stream.of(chunk.getTileEntities())
-		.filter(CreatureSpawner.class::isInstance)
-		.map(BlockState::getBlock)
-		.filter(block -> Settings.settings.ignored(block) == false)
-		.map(ISpawner::of)
-		.map(ActiveGenerator::new)
-		.forEach(queue::add);
-	}
-	
-	public void unload(Chunk chunk) {
-		spawners.values().stream()
-		.filter(g -> g.in(chunk))
-		.forEach(g -> g.remove(false));
-	}
+        public void load() {
+                for(Chunk chunk : world.getLoadedChunks()) {
+                        load(chunk);
+                }
+        }
 
-	public void clear() {
-		spawners.values().forEach(IGenerator::clear);
-		spawners.clear();
-	}
+        public void load(Chunk chunk) {
+                for(BlockState state : chunk.getTileEntities()) {
+                        if(state instanceof CreatureSpawner) {
+                                Block block = state.getBlock();
+                                if(Settings.settings.ignored(block) == false) {
+                                        queue.add(block);
+                                }
+                        }
+                }
+        }
+
+        public void unload(Chunk chunk) {
+                synchronized (spawners) {
+                        Iterator<Map.Entry<Pos, IGenerator>> it = spawners.entrySet().iterator();
+                        while(it.hasNext()) {
+                                Map.Entry<Pos, IGenerator> entry = it.next();
+                                IGenerator g = entry.getValue();
+                                if(g.in(chunk)) {
+                                        g.remove(false);
+                                        it.remove();
+                                }
+                        }
+                }
+                queue.removeIf(block -> block.getWorld() == chunk.getWorld()
+                                && (block.getX() >> 4) == chunk.getX()
+                                && (block.getZ() >> 4) == chunk.getZ());
+        }
+
+        public void clear() {
+                spawners.values().forEach(IGenerator::clear);
+                spawners.clear();
+                queue.clear();
+        }
 	
 	public int active() {
 		return spawners.size();
 	}
 	
-	public void update() {
-		spawners.values().forEach(IGenerator::update);
-	}
+        public void update() {
+                for(IGenerator g : spawners.values()) g.update();
+        }
+
+        public void control() {
+                for(IGenerator g : spawners.values()) g.control();
+        }
 	
-	public void control() {
-		spawners.values().forEach(IGenerator::control);
-	}
-	
-	public void tick() {
-		if(queue.isEmpty() == false) {
-			queue.forEach(this::put);
-			queue.clear();
-		}
-		spawners.values().forEach(IGenerator::tick);
-	}
+        public void tick() {
+                int processed = 0;
+                while(processed++ < LOAD_BATCH) {
+                        Block block = queue.poll();
+                        if(block == null) break;
+                        if(block.getType() != Material.SPAWNER) continue;
+                        put(block);
+                }
+                for(IGenerator g : spawners.values()) g.tick();
+        }
 
 	public void reduce() {
 		List<Pos> toRemove = new ArrayList<>();
