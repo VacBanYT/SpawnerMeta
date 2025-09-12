@@ -210,17 +210,19 @@ public class EventListeners implements Listener {
 	}
 	
 	private static abstract class RegistryAbstract implements Listener {
-		
+
 		private boolean registered;
-		
+
 		protected void register() {
-			if(registered == true) return;
+			if (registered) return;
 			Bukkit.getPluginManager().registerEvents(this, SpawnerMeta.instance());
+			registered = true; // <-- brakowało
 		}
-		
+
 		protected void unregister() {
-			if(registered == false) return;
+			if (!registered) return;
 			HandlerList.unregisterAll(this);
+			registered = false; // <-- brakowało
 		}
 		
 		public abstract void update();
@@ -262,10 +264,7 @@ public class EventListeners implements Listener {
 
 		@EventHandler(priority = EventPriority.HIGHEST)
 		private void onUnloadLink(ChunkUnloadEvent event) {
-			Stream.of(event.getChunk().getTileEntities())
-				.filter(CreatureSpawner.class::isInstance)
-				.map(BlockState::getBlock)
-				.forEach(HookRegistry.WILD_STACKER::unlink);
+			HookRegistry.WILD_STACKER.unlink(event.getChunk());
 		}
 		
 	}

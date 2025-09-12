@@ -209,7 +209,7 @@ public final class SpawningManager {
 	
 	public static void unlink(Block block) {
 		if(HookRegistry.WILD_STACKER.exists() == false) return;
-		HookRegistry.WILD_STACKER.unlink(block);
+		HookRegistry.WILD_STACKER.unlink(block.getChunk());
 	}
 	
 	public static class SpawnerMetaSpawnEvent extends SpawnerSpawnEvent {

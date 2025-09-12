@@ -7,7 +7,9 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 import org.bukkit.Bukkit;
+import org.bukkit.Chunk;
 import org.bukkit.Location;
+import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.EntityType;
@@ -35,9 +37,18 @@ public class HookWildStacker implements HookInstance {
 	public boolean exists() {
 		return plugin != null;
 	}
-	
-	public void unlink(Block block) {
-		linked.remove(block);
+
+	public void unlink(Chunk chunk) {
+		if (chunk == null) return;
+		final World w = chunk.getWorld();
+		final int cx = chunk.getX();
+		final int cz = chunk.getZ();
+		// usuń tylko te wpisy, których block leży w wyładowywanym chunku
+		linked.keySet().removeIf(b ->
+				b.getWorld().equals(w) &&
+						(b.getX() >> 4) == cx &&
+						(b.getZ() >> 4) == cz
+		);
 	}
 
 	@Override
@@ -95,11 +106,11 @@ public class HookWildStacker implements HookInstance {
 			if(t < m) link.setStackAmount(t, true);
 			else if(t == m) {
 				link.setStackAmount(t, true);
-				unlink(block);
+				unlink(block.getChunk());
 			} else {
 				link.setStackAmount(m, true);
 				affected.add(le);
-				unlink(block);
+				unlink(block.getChunk());
 				count = t - m;
 				break x;
 			}
